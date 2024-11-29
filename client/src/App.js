@@ -1,118 +1,236 @@
 import React, { useState, useEffect } from "react";
-import { MapContainer, TileLayer, Marker, Popup, Polyline } from "react-leaflet";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  Polyline,
+  useMap,
+} from "react-leaflet";
 import "leaflet/dist/leaflet.css";
-import io from "socket.io-client";
-import axios from "axios";
-import { useGeolocated } from "react-geolocated";
+//import "bootstrap/dist/css/bootstrap.min.css";
+import L from "leaflet";
+import polyline from "@mapbox/polyline";
+import axios from 'axios';
 
-const socket = io("http://localhost:5000");
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: require("leaflet/dist/images/marker-icon-2x.png"),
+  iconUrl: require("leaflet/dist/images/marker-icon.png"),
+  shadowUrl: require("leaflet/dist/images/marker-shadow.png"),
+});
 
 const App = () => {
-  const [vehicles, setVehicles] = useState([]);
   const [brands, setBrands] = useState([]);
   const [models, setModels] = useState([]);
-  const [selectedBrand, setSelectedBrand] = useState("");
-  const [selectedModel, setSelectedModel] = useState("");
-  const [currentLocation, setCurrentLocation] = useState(null);
+  const [selectedBrand, setSelectedBrand] = useState('');
+  const [selectedModel, setSelectedModel] = useState('');
+  const [currentLocation, setCurrentLocation] = useState([0, 0]);
+  const [source, setSource] = useState("");
   const [destination, setDestination] = useState("");
-  const [locations, setLocations] = useState([]);
+  const [destinationCoords, setDestinationCoords] = useState(null);
   const [route, setRoute] = useState([]);
 
-  const { coords } = useGeolocated({
-    positionOptions: { enableHighAccuracy: true },
-    userDecisionTimeout: 5000,
-  });
-
   useEffect(() => {
-    axios.get("http://localhost:5000/vehicles").then((response) => {
-      setVehicles(response.data);
-      const uniqueBrands = [...new Set(response.data.map((v) => v.Brand))];
-      setBrands(uniqueBrands);
-    });
-
-    socket.on("locationUpdate", (data) => {
-      setLocations(data);
-    });
-
-    return () => socket.off("locationUpdate");
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude } = position.coords;
+        setCurrentLocation([latitude, longitude]);
+        setSource(`${latitude},${longitude}`);
+      },
+      (error) => console.error("Geolocation error:", error),
+      { enableHighAccuracy: true }
+    );
   }, []);
 
+  // Fetch brands on load
   useEffect(() => {
-    if (coords) {
-      setCurrentLocation([coords.latitude, coords.longitude]);
-    }
-  }, [coords]);
+    axios.get('http://localhost:5000/brands')
+      .then((response) => {
+        setBrands(response.data);
+      })
+      .catch((error) => {
+        console.error('Error fetching brands:', error);
+      });
+  }, []);
 
-  const handleBrandChange = (brand) => {
+  // Fetch models based on selected brand
+  const handleBrandChange = (e) => {
+    const brand = e.target.value;
     setSelectedBrand(brand);
-    const filteredModels = vehicles.filter((v) => v.Brand === brand).map((v) => v.Model);
-    setModels(filteredModels);
-    setSelectedModel("");
+
+    axios.get(`http://localhost:5000/models?brand=${brand}`)
+      .then((response) => {
+        setModels(response.data);
+      })
+      .catch((error) => {
+        console.error('Error fetching models:', error);
+      });
   };
 
-  const fetchOptimizedRoute = async () => {
+
+  const FlyToLocation = ({ coords }) => {
+    const map = useMap();
+    useEffect(() => {
+      if (coords) {
+        map.flyTo(coords, 17);
+      }
+    }, [coords, map]);
+    return null;
+  };
+
+  const handleGeocoding = async (address, type) => {
     try {
-      const response = await axios.post("http://localhost:5000/optimize", {
-        model: selectedModel,
-        currentLocation,
-        destination,
-      });
-      setRoute(response.data.routes); // Update route state with API response
-    } catch (err) {
-      console.error(err);
+      const response = await fetch(
+        `http://localhost:5000/geocode?address=${encodeURIComponent(address)}`
+      );
+      const data = await response.json();
+
+      if (data.lat && data.lng) {
+        if (type === "source") {
+          setSource(`${data.lat},${data.lng}`); // Use coordinates for source
+        } else if (type === "destination") {
+          setDestinationCoords([data.lat, data.lng]); // Use coordinates for destination
+        }
+      } else {
+        alert("Place not found, please try another name.");
+      }
+    } catch (error) {
+      console.error("Geocoding error:", error);
+    }
+  };
+
+  const fetchRoute = async () => {
+    if (!source || !destinationCoords) {
+      alert("Please provide both source and destination.");
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        `http://localhost:5000/directions?origin=${source}&destination=${destinationCoords[0]},${destinationCoords[1]}&mode=driving`
+      );
+      const data = await response.json();
+
+      if (data.routes && data.routes.length > 0) {
+        const points = data.routes[0].overview_polyline.points;
+        const decodedPoints = polyline.decode(points); // Decode the polyline
+        setRoute(decodedPoints);
+      } else {
+        alert("No route found.");
+      }
+    } catch (error) {
+      console.error("Directions error:", error);
     }
   };
 
   return (
-    <div>
-      <h1>Real-Time Route Optimizer</h1>
+    <div className="container-fluid">
+      <div className="row">
+        <div className="col-md-4 p-4 bg-light">
+          <h4>Route Planner</h4>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              fetchRoute();
+            }}
+          >
+            <div className="mb-3">
+              <label>Brand</label>
+              <select
+                className="form-control"
+                onChange={handleBrandChange}
+                value={selectedBrand}
+              >
+                <option value="">Select Brand</option>
+                {brands.map((brand, index) => (
+                  <option key={index} value={brand}>
+                    {brand}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="mb-3">
+              <div className="form-group">
+                <label>Model</label>
+                <select
+                  className="form-control"
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  value={selectedModel}
+                >
+                  <option value="">Select Model</option>
+                  {models.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.model}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
 
-      <label>Select Brand:</label>
-      <select value={selectedBrand} onChange={(e) => handleBrandChange(e.target.value)}>
-        <option value="">Select a Brand</option>
-        {brands.map((brand) => (
-          <option key={brand} value={brand}>
-            {brand}
-          </option>
-        ))}
-      </select>
+            <div className="mb-3">
+              <label htmlFor="source" className="form-label">
+                Source
+              </label>
+              <input
+                type="text"
+                id="source"
+                className="form-control"
+                value={source}
+                onChange={(e) => setSource(e.target.value)}
+                onBlur={() => handleGeocoding(source, "source")} // Convert to geocode on blur
+              />
+            </div>
 
-      <label>Select Model:</label>
-      <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} disabled={!selectedBrand}>
-        <option value="">Select a Model</option>
-        {models.map((model) => (
-          <option key={model} value={model}>
-            {model}
-          </option>
-        ))}
-      </select>
+            <div className="mb-3">
+              <label htmlFor="destination" className="form-label">
+                Destination
+              </label>
+              <input
+                type="text"
+                id="destination"
+                className="form-control"
+                value={destination}
+                onChange={(e) => setDestination(e.target.value)}
+                onBlur={() => handleGeocoding(destination, "destination")} // Convert to geocode on blur
+              />
+            </div>
 
-      <label>Destination:</label>
-      <input
-        type="text"
-        value={destination}
-        onChange={(e) => setDestination(e.target.value)}
-        placeholder="Enter destination address"
-      />
+            <button type="submit" className="btn btn-primary">
+              Get Route
+            </button>
+          </form>
+        </div>
 
-      <button onClick={fetchOptimizedRoute} disabled={!selectedModel || !currentLocation || !destination}>
-        Optimize Route
-      </button>
-
-      <MapContainer center={currentLocation || [51.505, -0.09]} zoom={13} style={{ height: "400px", width: "100%" }}>
-        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        {currentLocation && (
-          <Marker position={currentLocation}>
-            <Popup>Your Current Location</Popup>
-          </Marker>
-        )}
-        {locations.map((location) => (
-          <Marker key={location.id} position={location.coordinates}>
-            <Popup>{location.name}</Popup>
-          </Marker>
-        ))}
-        {route.length > 0 && <Polyline positions={route} color="blue" />}
-      </MapContainer>
+        <div className="col-md-8">
+          <MapContainer
+            center={currentLocation}
+            zoom={13}
+            style={{ height: "100vh", width: "100%" }}
+          >
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution="&copy; OpenStreetMap contributors"
+            />
+            <FlyToLocation coords={destinationCoords || currentLocation} />
+            <Marker position={currentLocation}>
+              <Popup>Your Location</Popup>
+            </Marker>
+            {destinationCoords && (
+              <Marker position={destinationCoords}>
+                <Popup>Destination</Popup>
+              </Marker>
+            )}
+            {route.length > 0 && (
+              <Polyline
+                positions={route.map((point) => [point[0], point[1]])}
+                color="blue"
+                weight={3}
+              />
+            )}
+          </MapContainer>
+        </div>
+      </div>
     </div>
   );
 };

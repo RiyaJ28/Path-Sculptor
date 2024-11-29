@@ -1,0 +1,7 @@
+flask
+numpy
+pandas
+osmnx
+scikit-learn
+networkx
+shapely
